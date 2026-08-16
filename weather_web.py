@@ -16,7 +16,7 @@ def get_weather_info(code):
     }
     return weather_map.get(code, ("🌡️", "정보 없음"))
 
-st.title("🌤️ 스마트 날씨 예보")
+st.title("🌤️ 주간 날씨 예보")
 
 # 1. 도시/동 검색
 query = st.text_input("위치 검색 (예: 서울 역삼동, 상암동, 부산 우동)", value="서울 역삼동")
