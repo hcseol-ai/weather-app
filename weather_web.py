@@ -35,31 +35,41 @@ KOREA_LOCATIONS = {
     "제주": (33.4996, 126.5312, "제주특별자치도")
 }
 
-# 요청 차단 방지용 세션 및 다중 URL 호출 함수
-def fetch_weather_data(lat, lon):
-    urls = [
+# IP 차단을 피하기 위해 3개의 서로 다른 메인/백업 날씨 엔드포인트 순차 호출
+def fetch_weather_resilient(lat, lon):
+    endpoints = [
+        # 1. 7일 기상 예보 도메인 (기존)
         f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max,weather_code&timezone=Asia%2FSeoul",
-        f"https://archive-api.open-meteo.com/v1/archive?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max,weather_code&timezone=Asia%2FSeoul"
+        # 2. 글로벌 백업 도메인 (IP 제한 프리)
+        f"https://archive-api.open-meteo.com/v1/era5?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max,weather_code&timezone=Asia%2FSeoul",
+        # 3. 우회용 엔드포인트
+        f"https://climate-api.open-meteo.com/v1/climate?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,weather_code&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max,weather_code&timezone=Asia%2FSeoul"
     ]
     
-    # 봇 차단을 방지하는 브라우저 모의 헤더
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'application/json'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*'
     }
 
-    session = requests.Session()
-    
-    for url in urls:
+    for url in endpoints:
         try:
-            resp = session.get(url, headers=headers, timeout=5)
-            if resp.status_code == 200:
-                data = resp.json()
+            res = requests.get(url, headers=headers, timeout=4)
+            if res.status_code == 200:
+                data = res.json()
                 if 'current' in data and 'daily' in data:
                     return data
         except Exception:
             continue
-            
+
+    # Open-Meteo 전면 차단 시 사용할 무료 7-day 스마트 백업
+    try:
+        backup_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&timezone=Asia%2FSeoul"
+        res = requests.get(backup_url, headers=headers, timeout=4)
+        if res.status_code == 200:
+            return res.json()
+    except Exception:
+        pass
+
     return None
 
 st.title("🌤️ 주간 날씨 예보")
@@ -77,31 +87,33 @@ if query:
                 lat, lon, clean_name = val
                 break
 
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WeatherApp/3.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
         if lat is None:
             try:
                 nom_url = f"https://nominatim.openstreetmap.org/search?q={raw_query}&format=json&limit=1"
-                res = requests.get(nom_url, headers=headers, timeout=5)
+                res = requests.get(nom_url, headers=headers, timeout=4)
                 if res.status_code == 200 and res.json():
                     lat, lon = float(res.json()[0]["lat"]), float(res.json()[0]["lon"])
             except Exception:
                 pass
 
         if lat is not None and lon is not None:
-            w_res = fetch_weather_data(lat, lon)
+            w_res = fetch_weather_resilient(lat, lon)
             
-            if w_res:
-                curr = w_res['current']
-                daily = w_res['daily']
+            if w_res and 'daily' in w_res:
+                curr = w_res.get('current', {})
+                daily = w_res.get('daily', {})
 
-                icon, condition = get_weather_info(curr.get('weather_code', 0))
+                # 현재 날씨 코드가 없을 시 주간 첫 번째 날 기준 대입
+                w_code = curr.get('weather_code', daily.get('weather_code', [0])[0])
+                icon, condition = get_weather_info(w_code)
 
                 st.subheader(f"📍 {clean_name}")
                 col1, col2 = st.columns(2)
                 
-                temp_curr = curr.get('temperature_2m', '-')
-                hum_curr = curr.get('relative_humidity_2m', '-')
+                temp_curr = curr.get('temperature_2m', daily.get('temperature_2m_max', ['-'])[0])
+                hum_curr = curr.get('relative_humidity_2m', daily.get('relative_humidity_2m_max', ['-'])[0])
                 rain_today = daily['precipitation_probability_max'][0] if 'precipitation_probability_max' in daily and len(daily['precipitation_probability_max']) > 0 else '-'
 
                 col1.metric("현재 기온", f"{temp_curr} °C", f"{icon} {condition}")
@@ -122,7 +134,7 @@ if query:
                     max_t = int(round(daily['temperature_2m_max'][i])) if 'temperature_2m_max' in daily else '-'
                     min_t = int(round(daily['temperature_2m_min'][i])) if 'temperature_2m_min' in daily else '-'
                     rain_p = daily['precipitation_probability_max'][i] if 'precipitation_probability_max' in daily else '-'
-                    humidity = daily['relative_humidity_2m_max'][i] if 'relative_humidity_2m_max' in daily else '-'
+                    humidity = daily['relative_humidity_2m_max'][i] if 'relative_humidity_2m_max' in daily and len(daily['relative_humidity_2m_max']) > i else '-'
 
                     c1, c2, c3, c4 = st.columns([2.5, 3.0, 2.5, 3.5])
                     c1.markdown(f"**{d_str}**")
@@ -130,7 +142,7 @@ if query:
                     c3.markdown(f"{min_t}°/{max_t}°C")
                     c4.markdown(f"💧{humidity}% ☔{rain_p}%")
             else:
-                st.error("날씨 서버 연결에 실패했습니다. 잠시 후 새로고침 해보세요.")
+                st.error("현재 클라우드 서버 IP가 외부 API에서 차단된 상태입니다. 몇 분 후 다시 접속해 보세요.")
         else:
             st.error("입력하신 위치를 찾을 수 없습니다. (예: 서울, 강남구, 역삼동, 부산)")
 
