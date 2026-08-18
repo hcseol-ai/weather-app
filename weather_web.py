@@ -1,11 +1,10 @@
 import streamlit as st
 import requests
+import time
 from datetime import datetime
 
-# 모바일 및 PC 웹 화면 설정
 st.set_page_config(page_title="주간 날씨 예보", page_icon="🌤️", layout="centered")
 
-# WMO 날씨 코드 매핑 함수
 def get_weather_info(code):
     weather_map = {
         0: ("☀️", "맑음"), 1: ("🌤️", "대체로 맑음"), 2: ("⛅", "구름 조금"), 3: ("☁️", "흐림"),
@@ -16,7 +15,6 @@ def get_weather_info(code):
     }
     return weather_map.get(code, ("🌡️", "정보 없음"))
 
-# 주요 한국 지역 한글 -> 좌표/한글명 보정 데이터베이스
 KOREA_LOCATIONS = {
     "서울": (37.5665, 126.9780, "서울특별시"),
     "역삼동": (37.5006, 127.0364, "서울 강남구 역삼동"),
@@ -40,7 +38,18 @@ KOREA_LOCATIONS = {
 
 st.title("🌤️ 주간 날씨 예보")
 
-# 1. 도시/구/동 위치 검색
+# 429 에러 대응을 위한 안전한 API 호출 함수 (최대 3회 재시도)
+def fetch_weather_safe(url, headers):
+    for attempt in range(3):
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+        elif resp.status_code == 429:
+            time.sleep(1.5 * (attempt + 1))  # 429 감지 시 잠시 대기 후 재시도
+        else:
+            break
+    return None
+
 query = st.text_input("위치 검색 (예: 서울, 강남구, 역삼동, 강릉)", value="역삼동")
 
 if query:
@@ -48,17 +57,14 @@ if query:
         raw_query = query.strip()
         lat, lon, clean_name = None, None, raw_query
         
-        # 1차 시도: 내장 데이터베이스 확인
         q_key = raw_query.replace(" ", "")
         for key, val in KOREA_LOCATIONS.items():
             if key in q_key:
                 lat, lon, clean_name = val
                 break
 
-        # HTTP 표준 헤더 설정
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlitApp/1.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WeatherApp/2.0'}
 
-        # 2차 시도: Open-Meteo 지오코딩 API
         if lat is None:
             try:
                 geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={raw_query}&count=1&language=ko&format=json"
@@ -73,7 +79,6 @@ if query:
             except Exception:
                 pass
 
-        # 3차 시도: Nominatim 백업 지오코딩 API
         if lat is None:
             try:
                 nom_url = f"https://nominatim.openstreetmap.org/search?q={raw_query}&format=json&limit=1"
@@ -85,7 +90,6 @@ if query:
             except Exception:
                 pass
 
-        # 좌표 확보 시 날씨 호출 (타임존을 Asia/Seoul로 명확히 지정)
         if lat is not None and lon is not None:
             weather_url = (
                 f"https://api.open-meteo.com/v1/forecast?"
@@ -95,58 +99,48 @@ if query:
                 f"timezone=Asia%2FSeoul"
             )
             
-            resp = requests.get(weather_url, headers=headers, timeout=10)
+            w_res = fetch_weather_safe(weather_url, headers)
             
-            if resp.status_code == 200:
-                w_res = resp.json()
+            if w_res and 'current' in w_res and 'daily' in w_res:
+                curr = w_res['current']
+                daily = w_res['daily']
+
+                icon, condition = get_weather_info(curr.get('weather_code', 0))
+
+                st.subheader(f"📍 {clean_name}")
+                col1, col2 = st.columns(2)
                 
-                curr = w_res.get('current', {})
-                daily = w_res.get('daily', {})
+                temp_curr = curr.get('temperature_2m', '-')
+                hum_curr = curr.get('relative_humidity_2m', '-')
+                rain_today = daily['precipitation_probability_max'][0] if 'precipitation_probability_max' in daily and len(daily['precipitation_probability_max']) > 0 else '-'
 
-                # 데이터 유효성 검증
-                if curr and daily and 'time' in daily and len(daily['time']) > 0:
-                    icon, condition = get_weather_info(curr.get('weather_code', 0))
+                col1.metric("현재 기온", f"{temp_curr} °C", f"{icon} {condition}")
+                col2.metric("습도 / 강수확률", f"{hum_curr}%", f"☔ 오늘 {rain_today}%")
 
-                    # 상단 현재 날씨
-                    st.subheader(f"📍 {clean_name}")
-                    col1, col2 = st.columns(2)
+                st.divider()
+
+                st.write("📅 **7일 주간 예보**")
+                weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
+
+                for i in range(len(daily['time'])):
+                    date_obj = datetime.strptime(daily['time'][i], "%Y-%m-%d")
+                    d_str = f"{date_obj.strftime('%m/%d')}({weekday_kr[date_obj.weekday()]})"
                     
-                    temp_curr = curr.get('temperature_2m', '-')
-                    hum_curr = curr.get('relative_humidity_2m', '-')
-                    rain_today = daily['precipitation_probability_max'][0] if 'precipitation_probability_max' in daily and len(daily['precipitation_probability_max']) > 0 else '-'
-
-                    col1.metric("현재 기온", f"{temp_curr} °C", f"{icon} {condition}")
-                    col2.metric("습도 / 강수확률", f"{hum_curr}%", f"☔ 오늘 {rain_today}%")
-
-                    st.divider()
-
-                    # 3. 7일 주간 예보
-                    st.write("📅 **7일 주간 예보**")
+                    code = daily['weather_code'][i] if 'weather_code' in daily else 0
+                    d_icon, d_cond = get_weather_info(code)
                     
-                    weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
+                    max_t = int(round(daily['temperature_2m_max'][i])) if 'temperature_2m_max' in daily else '-'
+                    min_t = int(round(daily['temperature_2m_min'][i])) if 'temperature_2m_min' in daily else '-'
+                    rain_p = daily['precipitation_probability_max'][i] if 'precipitation_probability_max' in daily else '-'
+                    humidity = daily['relative_humidity_2m_max'][i] if 'relative_humidity_2m_max' in daily else '-'
 
-                    for i in range(len(daily['time'])):
-                        date_obj = datetime.strptime(daily['time'][i], "%Y-%m-%d")
-                        d_str = f"{date_obj.strftime('%m/%d')}({weekday_kr[date_obj.weekday()]})"
-                        
-                        code = daily['weather_code'][i] if 'weather_code' in daily else 0
-                        d_icon, d_cond = get_weather_info(code)
-                        
-                        max_t = int(round(daily['temperature_2m_max'][i])) if 'temperature_2m_max' in daily else '-'
-                        min_t = int(round(daily['temperature_2m_min'][i])) if 'temperature_2m_min' in daily else '-'
-                        rain_p = daily['precipitation_probability_max'][i] if 'precipitation_probability_max' in daily else '-'
-                        humidity = daily['relative_humidity_2m_max'][i] if 'relative_humidity_2m_max' in daily else '-'
-
-                        c1, c2, c3, c4 = st.columns([2.5, 3.0, 2.5, 3.5])
-                        
-                        c1.markdown(f"**{d_str}**")
-                        c2.markdown(f"{d_icon} {d_cond}")
-                        c3.markdown(f"{min_t}°/{max_t}°C")
-                        c4.markdown(f"💧{humidity}% ☔{rain_p}%")
-                else:
-                    st.error("날씨 응답 형식 분석에 실패했습니다.")
+                    c1, c2, c3, c4 = st.columns([2.5, 3.0, 2.5, 3.5])
+                    c1.markdown(f"**{d_str}**")
+                    c2.markdown(f"{d_icon} {d_cond}")
+                    c3.markdown(f"{min_t}°/{max_t}°C")
+                    c4.markdown(f"💧{humidity}% ☔{rain_p}%")
             else:
-                st.error(f"날씨 서버 응답 에러 (코드: {resp.status_code})")
+                st.warning("날씨 서버에 요청이 몰려 잠시 지연되고 있습니다. 3초 후 다시 검색해 주세요.")
         else:
             st.error("입력하신 위치를 찾을 수 없습니다. (예: 서울, 강남구, 역삼동, 부산)")
 
