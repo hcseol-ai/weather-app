@@ -16,78 +16,109 @@ def get_weather_info(code):
     }
     return weather_map.get(code, ("🌡️", "정보 없음"))
 
+# 주요 한국 지역 한글 -> 좌표/한글명 보정 데이터베이스
+KOREA_LOCATIONS = {
+    "서울": (37.5665, 126.9780, "서울특별시"),
+    "역삼동": (37.5006, 127.0364, "서울 강남구 역삼동"),
+    "역삼": (37.5006, 127.0364, "서울 강남구 역삼동"),
+    "강남구": (37.5172, 127.0473, "서울특별시 강남구"),
+    "강남": (37.5172, 127.0473, "서울특별시 강남구"),
+    "상암동": (37.5778, 126.8914, "서울 마포구 상암동"),
+    "상암": (37.5778, 126.8914, "서울 마포구 상암동"),
+    "부산": (35.1796, 129.0756, "부산광역시"),
+    "우동": (35.1631, 129.1636, "부산 해운대구 우동"),
+    "해운대": (35.1631, 129.1636, "부산 해운대구 우동"),
+    "대구": (35.8714, 128.6014, "대구광역시"),
+    "인천": (37.4563, 126.7052, "인천광역시"),
+    "광주": (35.1595, 126.8526, "광주광역시"),
+    "대전": (36.3504, 127.3845, "대전광역시"),
+    "울산": (35.5384, 129.3114, "울산광역시"),
+    "수원": (37.2636, 127.0286, "수원시"),
+    "강릉": (37.7519, 128.8760, "강원특별자치도 강릉시"),
+    "제주": (33.4996, 126.5312, "제주특별자치도")
+}
+
 st.title("🌤️ 주간 날씨 예보")
 
-# 1. 도시/동 위치 검색
-query = st.text_input("위치 검색 (예: 서울 역삼동, 상암동, 부산 우동)", value="서울 역삼동")
+# 1. 도시/구/동 위치 검색
+query = st.text_input("위치 검색 (예: 서울, 강남구, 역삼동, 강릉)", value="역삼동")
 
 if query:
     try:
-        # Streamlit Cloud 차단 방지용 User-Agent 강화
-        headers = {
-            'User-Agent': 'WeatherAppApp/1.0 (contact: test@example.com)'
-        }
+        raw_query = query.strip()
+        lat, lon, clean_name = None, None, raw_query
         
-        geo_url = f"https://nominatim.openstreetmap.org/search?q={query}&format=json&accept-language=ko&limit=1"
-        geo_res = requests.get(geo_url, headers=headers, timeout=15)
-        
-        if geo_res.status_code == 200:
-            res = geo_res.json()
-            if res and len(res) > 0:
-                lat = float(res[0]["lat"])
-                lon = float(res[0]["lon"])
-                
-                display_name = res[0].get("display_name", query)
-                clean_name = display_name.split(',')[0].strip()
+        # 1차 시도: 한국어 사전 매핑 검사
+        q_key = raw_query.replace(" ", "")
+        for key, val in KOREA_LOCATIONS.items():
+            if key in q_key:
+                lat, lon, clean_name = val
+                break
 
-                # 2. 날씨 데이터 조회 (Open-Meteo)
-                weather_url = (
-                    f"https://api.open-meteo.com/v1/forecast?"
-                    f"latitude={lat}&longitude={lon}&"
-                    f"current=temperature_2m,relative_humidity_2m,weather_code&"
-                    f"daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max,weather_code&"
-                    f"timezone=auto"
-                )
-                w_res = requests.get(weather_url, headers=headers, timeout=15).json()
-
-                curr = w_res['current']
-                daily = w_res['daily']
-                icon, condition = get_weather_info(curr['weather_code'])
-
-                # 상단 현재 날씨
-                st.subheader(f"📍 {clean_name}")
-                col1, col2 = st.columns(2)
-                col1.metric("현재 기온", f"{curr['temperature_2m']} °C", f"{icon} {condition}")
-                col2.metric("습도 / 강수확률", f"{curr['relative_humidity_2m']}%", f"☔ 오늘 {daily['precipitation_probability_max'][0]}%")
-
-                st.divider()
-
-                # 3. 7일 주간 예보
-                st.write("📅 **7일 주간 예보**")
-                
-                weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
-
-                for i in range(len(daily['time'])):
-                    date_obj = datetime.strptime(daily['time'][i], "%Y-%m-%d")
-                    d_str = f"{date_obj.strftime('%m/%d')}({weekday_kr[date_obj.weekday()]})"
+        # 2차 시도: Open-Meteo 지오코딩 검색
+        if lat is None:
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={raw_query}&count=1&language=ko&format=json"
+            res = requests.get(geo_url, timeout=10)
+            if res.status_code == 200:
+                geo_data = res.json()
+                if "results" in geo_data and len(geo_data["results"]) > 0:
+                    loc = geo_data["results"][0]
+                    lat, lon = float(loc["latitude"]), float(loc["longitude"])
                     
-                    d_icon, d_cond = get_weather_info(daily['weather_code'][i])
-                    max_t = int(round(daily['temperature_2m_max'][i]))
-                    min_t = int(round(daily['temperature_2m_min'][i]))
-                    rain_p = daily['precipitation_probability_max'][i]
-                    humidity = daily['relative_humidity_2m_max'][i]
+                    # API 반환명이 알파벳(영어)으로만 되어 있으면 사용자가 입력한 한글 검색어로 교체
+                    api_name = loc.get("name", "")
+                    if api_name.isascii():
+                        clean_name = raw_query
+                    else:
+                        clean_name = api_name
 
-                    c1, c2, c3, c4 = st.columns([2.5, 3.0, 2.5, 3.5])
-                    
-                    c1.markdown(f"**{d_str}**")
-                    c2.markdown(f"{d_icon} {d_cond}")
-                    c3.markdown(f"{min_t}°/{max_t}°C")
-                    c4.markdown(f"💧{humidity}% ☔{rain_p}%")
+        if lat and lon:
+            # 2. 날씨 데이터 조회 (Open-Meteo)
+            weather_url = (
+                f"https://api.open-meteo.com/v1/forecast?"
+                f"latitude={lat}&longitude={lon}&"
+                f"current=temperature_2m,relative_humidity_2m,weather_code&"
+                f"daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max,weather_code&"
+                f"timezone=auto"
+            )
+            w_res = requests.get(weather_url, timeout=10).json()
 
-            else:
-                st.error("위치를 찾을 수 없습니다. '서울 역삼동'처럼 구 또는 동 이름을 포함해 입력해 보세요.")
+            curr = w_res['current']
+            daily = w_res['daily']
+            icon, condition = get_weather_info(curr['weather_code'])
+
+            # 상단 현재 날씨
+            st.subheader(f"📍 {clean_name}")
+            col1, col2 = st.columns(2)
+            col1.metric("현재 기온", f"{curr['temperature_2m']} °C", f"{icon} {condition}")
+            col2.metric("습도 / 강수확률", f"{curr['relative_humidity_2m']}%", f"☔ 오늘 {daily['precipitation_probability_max'][0]}%")
+
+            st.divider()
+
+            # 3. 7일 주간 예보
+            st.write("📅 **7일 주간 예보**")
+            
+            weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
+
+            for i in range(len(daily['time'])):
+                date_obj = datetime.strptime(daily['time'][i], "%Y-%m-%d")
+                d_str = f"{date_obj.strftime('%m/%d')}({weekday_kr[date_obj.weekday()]})"
+                
+                d_icon, d_cond = get_weather_info(daily['weather_code'][i])
+                max_t = int(round(daily['temperature_2m_max'][i]))
+                min_t = int(round(daily['temperature_2m_min'][i]))
+                rain_p = daily['precipitation_probability_max'][i]
+                humidity = daily['relative_humidity_2m_max'][i]
+
+                c1, c2, c3, c4 = st.columns([2.5, 3.0, 2.5, 3.5])
+                
+                c1.markdown(f"**{d_str}**")
+                c2.markdown(f"{d_icon} {d_cond}")
+                c3.markdown(f"{min_t}°/{max_t}°C")
+                c4.markdown(f"💧{humidity}% ☔{rain_p}%")
+
         else:
-            st.error(f"위치 서비스 응답 오류 (상태 코드: {geo_res.status_code})")
+            st.error("위치를 찾을 수 없습니다. 예: '서울', '강남구', '역삼동'")
 
     except Exception as e:
-        st.error(f"상세 에러 내용: {e}")
+        st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
