@@ -4,26 +4,11 @@ from datetime import datetime
 
 st.set_page_config(page_title="주간 날씨 예보", page_icon="🌤️", layout="centered")
 
-# ==========================================
-# 🔑 여기에 OpenWeatherMap API 키를 입력하세요!
-OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
-# ==========================================
-
-# OpenWeatherMap 날씨 상태 아이콘/한글 매핑
-def get_weather_info(icon_code, description):
-    icon_map = {
-        "01d": "☀️", "01n": "🌙",
-        "02d": "🌤️", "02n": "🌤️",
-        "03d": "⛅", "03n": "⛅",
-        "04d": "☁️", "04n": "☁️",
-        "09d": "🌧️", "09n": "🌧️",
-        "10d": "🌦️", "10n": "🌦️",
-        "11d": "🌩️", "11n": "🌩️",
-        "13d": "❄️", "13n": "❄️",
-        "50d": "🌫️", "50n": "🌫️"
-    }
-    icon = icon_map.get(icon_code, "🌡️")
-    return icon, description
+# Streamlit Secrets에서 안전하게 API 키 불러오기
+try:
+    OPENWEATHER_API_KEY = st.secrets["OPENWEATHER_API_KEY"]
+except Exception:
+    OPENWEATHER_API_KEY = ""
 
 KOREA_LOCATIONS = {
     "서울": (37.5665, 126.9780, "서울특별시"),
@@ -46,28 +31,26 @@ KOREA_LOCATIONS = {
     "제주": (33.4996, 126.5312, "제주특별자치도")
 }
 
-# 10분간 결과를 캐싱하여 무분별한 API 호출 방지
+# 10분간 결과 캐싱하여 안정적 호출 유지
 @st.cache_data(ttl=600)
 def fetch_owm_weather(lat, lon, api_key):
-    # 현재 날씨 API
     curr_url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=kr"
-    # 5일 / 3시간 예보 API (무료 플랜 전용)
     forecast_url = f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={api_key}&units=metric&lang=kr"
     
     try:
         curr_res = requests.get(curr_url, timeout=5).json()
         forecast_res = requests.get(forecast_url, timeout=5).json()
         
-        if curr_res.get("cod") == 200 and forecast_res.get("cod") == "200":
+        if curr_res.get("cod") == 200 and str(forecast_res.get("cod")) == "200":
             return curr_res, forecast_res
     except Exception:
         pass
     return None, None
 
-st.title("🌤️ 주간 날씨 예보")
+st.title("🌤️ 날씨 예보")
 
-if OPENWEATHER_API_KEY == "여기에_발급받은_API_키를_입력하세요":
-    st.warning("⚠️ `weather_web.py` 파일의 `OPENWEATHER_API_KEY` 변수에 발급받으신 API 키를 입력해 주세요.")
+if not OPENWEATHER_API_KEY:
+    st.warning("⚠️ Streamlit Secrets에 `OPENWEATHER_API_KEY` 설정이 필요합니다.")
 else:
     query = st.text_input("위치 검색 (예: 서울, 강남구, 역삼동, 강릉)", value="역삼동")
 
@@ -84,7 +67,6 @@ else:
 
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-            # 지오코딩 (위치 찾기)
             if lat is None:
                 try:
                     geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={raw_query}&limit=1&appid={OPENWEATHER_API_KEY}"
@@ -98,32 +80,34 @@ else:
                 curr_data, forecast_data = fetch_owm_weather(lat, lon, OPENWEATHER_API_KEY)
                 
                 if curr_data and forecast_data:
-                    # 1. 현재 날씨 정보
+                    # 1. 현재 날씨
                     curr_temp = round(curr_data["main"]["temp"], 1)
                     curr_hum = curr_data["main"]["humidity"]
                     weather_desc = curr_data["weather"][0]["description"]
                     icon_code = curr_data["weather"][0]["icon"]
-                    icon, condition = get_weather_info(icon_code, weather_desc)
+                    icon_url = f"https://openweathermap.org/img/wn/{icon_code}@2x.png"
 
                     st.subheader(f"📍 {clean_name}")
                     col1, col2 = st.columns(2)
-                    col1.metric("현재 기온", f"{curr_temp} °C", f"{icon} {condition}")
-                    col2.metric("현재 습도", f"{curr_hum}%")
+                    
+                    with col1:
+                        st.metric("현재 기온", f"{curr_temp} °C", weather_desc)
+                    with col2:
+                        st.metric("현재 습도", f"{curr_hum}%")
 
                     st.divider()
 
-                    # 2. 예보 정보 (일별 데이터로 재구성)
-                    st.write("📅 **5일 예보**")
+                    # 2. 5일 예보
+                    st.write("📅 **5일 날씨 예보**")
                     weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
                     
-                    # 3시간 단위 예보 데이터를 일별 데이터로 그룹화
                     daily_summary = {}
                     for item in forecast_data["list"]:
-                        dt_txt = item["dt_txt"] # "2026-08-19 12:00:00"
+                        dt_txt = item["dt_txt"]
                         date_str = dt_txt.split(" ")[0]
                         
                         temp = item["main"]["temp"]
-                        pop = item.get("pop", 0) * 100 # 강수확률
+                        pop = item.get("pop", 0) * 100
                         icon_item = item["weather"][0]["icon"]
                         desc_item = item["weather"][0]["description"]
                         
@@ -138,7 +122,6 @@ else:
                             daily_summary[date_str]["temps"].append(temp)
                             daily_summary[date_str]["pops"].append(pop)
 
-                    # 일별 예보 화면 출력
                     for d_str, val in list(daily_summary.items())[:5]:
                         date_obj = datetime.strptime(d_str, "%Y-%m-%d")
                         formatted_date = f"{date_obj.strftime('%m/%d')}({weekday_kr[date_obj.weekday()]})"
@@ -146,15 +129,16 @@ else:
                         max_t = round(max(val["temps"]))
                         min_t = round(min(val["temps"]))
                         max_pop = round(max(val["pops"]))
-                        d_icon, d_cond = get_weather_info(val["icon"], val["desc"])
+                        d_icon_url = f"https://openweathermap.org/img/wn/{val['icon']}.png"
+                        d_desc = val["desc"]
 
-                        c1, c2, c3, c4 = st.columns([2.5, 3.0, 2.5, 3.5])
+                        c1, c2, c3, c4 = st.columns([2.5, 3.5, 2.5, 3.5])
                         c1.markdown(f"**{formatted_date}**")
-                        c2.markdown(f"{d_icon} {d_cond}")
+                        c2.markdown(f"![icon]({d_icon_url}) **{d_desc}**")
                         c3.markdown(f"{min_t}°/{max_t}°C")
                         c4.markdown(f"☔ {max_pop}%")
                 else:
-                    st.error("날씨 데이터를 불러오지 못했습니다. API 키가 활성화되었는지 확인해 주세요. (발급 후 10분~2시간 소요)")
+                    st.error("날씨 데이터를 불러오지 못했습니다. API 키 활성화 여부를 확인해 주세요.")
             else:
                 st.error("입력하신 위치를 찾을 수 없습니다. (예: 서울, 강남구, 역삼동, 부산)")
 
