@@ -16,7 +16,7 @@ def get_weather_info(code):
     }
     return weather_map.get(code, ("🌡️", "정보 없음"))
 
-# 주요 한국 지역 한글 -> 좌표/한글명 보정 데이터베이스
+# 주요 한국 지역 한글 -> 좌표/한글명 보정 데이터베이스 (해외 서버 차단 대비 100% 보장 데이터)
 KOREA_LOCATIONS = {
     "서울": (37.5665, 126.9780, "서울특별시"),
     "역삼동": (37.5006, 127.0364, "서울 강남구 역삼동"),
@@ -48,30 +48,43 @@ if query:
         raw_query = query.strip()
         lat, lon, clean_name = None, None, raw_query
         
-        # 1차 시도: 한국어 사전 매핑 검사
+        # 1차 시도: 사전 등록 내장 데이터베이스 확인 (Streamlit Cloud에서 가장 빠르고 정확함)
         q_key = raw_query.replace(" ", "")
         for key, val in KOREA_LOCATIONS.items():
             if key in q_key:
                 lat, lon, clean_name = val
                 break
 
-        # 2차 시도: Open-Meteo 지오코딩 검색
+        # 2차 시도: Open-Meteo 지오코딩 검색 (User-Agent 헤더 추가하여 Cloud 차단 회피)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) StreamlitWeatherApp/1.0'}
+        
         if lat is None:
-            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={raw_query}&count=1&language=ko&format=json"
-            res = requests.get(geo_url, timeout=10)
-            if res.status_code == 200:
-                geo_data = res.json()
-                if "results" in geo_data and len(geo_data["results"]) > 0:
-                    loc = geo_data["results"][0]
-                    lat, lon = float(loc["latitude"]), float(loc["longitude"])
-                    
-                    api_name = loc.get("name", "")
-                    if api_name.isascii():
-                        clean_name = raw_query
-                    else:
-                        clean_name = api_name
+            try:
+                geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={raw_query}&count=1&language=ko&format=json"
+                res = requests.get(geo_url, headers=headers, timeout=5)
+                if res.status_code == 200:
+                    geo_data = res.json()
+                    if "results" in geo_data and len(geo_data["results"]) > 0:
+                        loc = geo_data["results"][0]
+                        lat, lon = float(loc["latitude"]), float(loc["longitude"])
+                        api_name = loc.get("name", "")
+                        clean_name = raw_query if api_name.isascii() else api_name
+            except Exception:
+                pass
 
-        # 좌표를 찾은 경우에만 날씨 API 호출
+        # 3차 시도: OpenStreetMap Nominatim 지오코딩 백업
+        if lat is None:
+            try:
+                nom_url = f"https://nominatim.openstreetmap.org/search?q={raw_query}&format=json&limit=1"
+                res = requests.get(nom_url, headers=headers, timeout=5)
+                if res.status_code == 200:
+                    nom_data = res.json()
+                    if nom_data:
+                        lat, lon = float(nom_data[0]["lat"]), float(nom_data[0]["lon"])
+            except Exception:
+                pass
+
+        # 좌표를 얻었을 경우 날씨 데이터 호출
         if lat is not None and lon is not None:
             weather_url = (
                 f"https://api.open-meteo.com/v1/forecast?"
@@ -80,9 +93,8 @@ if query:
                 f"daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,relative_humidity_2m_max,weather_code&"
                 f"timezone=auto"
             )
-            w_res = requests.get(weather_url, timeout=10).json()
+            w_res = requests.get(weather_url, headers=headers, timeout=10).json()
 
-            # 응답 데이터에 'current' 및 'daily' 키가 제대로 들어있는지 검증
             if 'current' in w_res and 'daily' in w_res:
                 curr = w_res['current']
                 daily = w_res['daily']
@@ -118,11 +130,11 @@ if query:
                     c3.markdown(f"{min_t}°/{max_t}°C")
                     c4.markdown(f"💧{humidity}% ☔{rain_p}%")
             else:
-                st.warning("선택한 지역의 날씨 정보 데이터를 불러오지 못했습니다. 다른 지명으로 검색해 보세요.")
+                st.warning("선택한 지역의 날씨 데이터를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.")
 
         else:
             st.error("입력하신 위치를 찾을 수 없습니다. 예: '서울', '강남구', '역삼동', '부산'")
 
     except Exception as e:
-        st.error("날씨 정보를 불러오는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+        st.error(f"날씨 정보를 불러오는 중 오류가 발생했습니다: {e}")
 
