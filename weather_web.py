@@ -65,15 +65,14 @@ if query:
                     loc = geo_data["results"][0]
                     lat, lon = float(loc["latitude"]), float(loc["longitude"])
                     
-                    # API 반환명이 알파벳(영어)으로만 되어 있으면 사용자가 입력한 한글 검색어로 교체
                     api_name = loc.get("name", "")
                     if api_name.isascii():
                         clean_name = raw_query
                     else:
                         clean_name = api_name
 
-        if lat and lon:
-            # 2. 날씨 데이터 조회 (Open-Meteo)
+        # 좌표를 찾은 경우에만 날씨 API 호출
+        if lat is not None and lon is not None:
             weather_url = (
                 f"https://api.open-meteo.com/v1/forecast?"
                 f"latitude={lat}&longitude={lon}&"
@@ -83,42 +82,47 @@ if query:
             )
             w_res = requests.get(weather_url, timeout=10).json()
 
-            curr = w_res['current']
-            daily = w_res['daily']
-            icon, condition = get_weather_info(curr['weather_code'])
+            # 응답 데이터에 'current' 및 'daily' 키가 제대로 들어있는지 검증
+            if 'current' in w_res and 'daily' in w_res:
+                curr = w_res['current']
+                daily = w_res['daily']
+                icon, condition = get_weather_info(curr['weather_code'])
 
-            # 상단 현재 날씨
-            st.subheader(f"📍 {clean_name}")
-            col1, col2 = st.columns(2)
-            col1.metric("현재 기온", f"{curr['temperature_2m']} °C", f"{icon} {condition}")
-            col2.metric("습도 / 강수확률", f"{curr['relative_humidity_2m']}%", f"☔ 오늘 {daily['precipitation_probability_max'][0]}%")
+                # 상단 현재 날씨
+                st.subheader(f"📍 {clean_name}")
+                col1, col2 = st.columns(2)
+                col1.metric("현재 기온", f"{curr['temperature_2m']} °C", f"{icon} {condition}")
+                col2.metric("습도 / 강수확률", f"{curr['relative_humidity_2m']}%", f"☔ 오늘 {daily['precipitation_probability_max'][0]}%")
 
-            st.divider()
+                st.divider()
 
-            # 3. 7일 주간 예보
-            st.write("📅 **7일 주간 예보**")
-            
-            weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
-
-            for i in range(len(daily['time'])):
-                date_obj = datetime.strptime(daily['time'][i], "%Y-%m-%d")
-                d_str = f"{date_obj.strftime('%m/%d')}({weekday_kr[date_obj.weekday()]})"
+                # 3. 7일 주간 예보
+                st.write("📅 **7일 주간 예보**")
                 
-                d_icon, d_cond = get_weather_info(daily['weather_code'][i])
-                max_t = int(round(daily['temperature_2m_max'][i]))
-                min_t = int(round(daily['temperature_2m_min'][i]))
-                rain_p = daily['precipitation_probability_max'][i]
-                humidity = daily['relative_humidity_2m_max'][i]
+                weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
 
-                c1, c2, c3, c4 = st.columns([2.5, 3.0, 2.5, 3.5])
-                
-                c1.markdown(f"**{d_str}**")
-                c2.markdown(f"{d_icon} {d_cond}")
-                c3.markdown(f"{min_t}°/{max_t}°C")
-                c4.markdown(f"💧{humidity}% ☔{rain_p}%")
+                for i in range(len(daily['time'])):
+                    date_obj = datetime.strptime(daily['time'][i], "%Y-%m-%d")
+                    d_str = f"{date_obj.strftime('%m/%d')}({weekday_kr[date_obj.weekday()]})"
+                    
+                    d_icon, d_cond = get_weather_info(daily['weather_code'][i])
+                    max_t = int(round(daily['temperature_2m_max'][i]))
+                    min_t = int(round(daily['temperature_2m_min'][i]))
+                    rain_p = daily['precipitation_probability_max'][i]
+                    humidity = daily['relative_humidity_2m_max'][i]
+
+                    c1, c2, c3, c4 = st.columns([2.5, 3.0, 2.5, 3.5])
+                    
+                    c1.markdown(f"**{d_str}**")
+                    c2.markdown(f"{d_icon} {d_cond}")
+                    c3.markdown(f"{min_t}°/{max_t}°C")
+                    c4.markdown(f"💧{humidity}% ☔{rain_p}%")
+            else:
+                st.warning("선택한 지역의 날씨 정보 데이터를 불러오지 못했습니다. 다른 지명으로 검색해 보세요.")
 
         else:
-            st.error("위치를 찾을 수 없습니다. 예: '서울', '강남구', '역삼동'")
+            st.error("입력하신 위치를 찾을 수 없습니다. 예: '서울', '강남구', '역삼동', '부산'")
 
     except Exception as e:
-        st.error(f"데이터 처리 중 오류가 발생했습니다: {e}")
+        st.error("날씨 정보를 불러오는 중 일시적인 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
+
